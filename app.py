@@ -80,13 +80,14 @@ def run_scraper():
                 match_count = re.search(r"Lista wyników:\s*(\d+)", html) or re.search(r"spośród\s*<strong>(\d+)</strong>", html) or re.search(r"Znaleziono\s*(\d+)", html)
                 if match_count:
                     count = int(match_count.group(1))
-                if count > 0:
-                    results.append({"Wojewodztwo": city_data["province"], "Miasto": city_data["city"], "Liczba_Ogloszen": count, "URL": url})
+                
+                # Dodajemy WSZYSTKIE miasta, nawet te z 0 ogłoszeń
+                results.append({"Wojewodztwo": city_data["province"], "Miasto": city_data["city"], "Liczba_Ogloszen": count, "URL": url})
             else:
                  logger.warning(f"Błąd HTTP {resp.status_code} dla miasta {city_data['city']}")
             time.sleep(0.2)
 
-        logger.info(f"Znaleziono ogłoszenia w {len(results)} miastach. Pobieram populację z Wikidata...")
+        logger.info(f"Zakończono sprawdzanie {len(results)} miast. Pobieram populację z Wikidata...")
         
         query = """
         SELECT ?cityLabel (MAX(?pop) AS ?population) WHERE {
@@ -113,11 +114,18 @@ def run_scraper():
                 
             df_pop = pd.DataFrame(list(cities_pop.items()), columns=["Miasto", "Populacja"])
 
-            logger.info("Łączę dane i zapisuję CSV...")
+            logger.info("Łączę dane, filtruję i zapisuję CSV...")
             df_ads = pd.DataFrame(results)
             df = pd.merge(df_ads, df_pop, on="Miasto", how="inner")
+            
+            # Odrzucamy wiersze bez przypisanej populacji (bądź równej 0)
             df = df[df["Populacja"] > 0]
+            
+            # FILTROWANIE: Zostawiamy miasta, gdzie (Liczba_Ogloszen > 0) LUB (Liczba_Ogloszen == 0 ORAZ Populacja > 20000)
+            df = df[(df["Liczba_Ogloszen"] > 0) | ((df["Liczba_Ogloszen"] == 0) & (df["Populacja"] > 20000))]
+
             df["Ogloszenia_na_10k_mieszk"] = (df["Liczba_Ogloszen"] / df["Populacja"] * 10000).round(2)
+            
             df.to_csv(CSV_FILE, index=False, encoding="utf-8-sig")
             logger.info("✅ Cykl zakończony sukcesem! Dane zaktualizowane.")
 
@@ -141,7 +149,7 @@ start_background_task()
 
 # --- INTERFEJS UŻYTKOWNIKA (STREAMLIT) ---
 st.title("📊 Esconitor")
-st.markdown("Aplikacja automatycznie odświeża i analizuje dane co 5 minut.**")
+st.markdown("Odświeża dane co 5 minut")
 
 if not os.path.exists(CSV_FILE):
     st.info("Trwa pierwsze pobieranie danych. Odśwież stronę za około 2 minuty...")
@@ -155,7 +163,7 @@ st.caption(f"🕒 Ostatnia aktualizacja danych: {last_modified}")
 # Filtry
 col1, col2 = st.columns(2)
 with col1:
-    min_pop = st.number_input("Minimalna populacja miasta:", min_value=0, max_value=2000000, value=30000, step=10000)
+    min_pop = st.number_input("Minimalna populacja miasta:", min_value=0, max_value=2000000, value=20000, step=10000)
 with col2:
     woj_filter = st.selectbox("Wybierz województwo:", ["Wszystkie"] + sorted(df["Wojewodztwo"].unique().tolist()))
 
