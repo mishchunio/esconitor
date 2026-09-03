@@ -140,8 +140,8 @@ def start_background_task():
 start_background_task()
 
 # --- INTERFEJS UŻYTKOWNIKA (STREAMLIT) ---
-st.title("📊 Monitor Ogłoszeń w Polsce")
-st.markdown("Aplikacja automatycznie odświeża i analizuje dane co 5 minut. **Kliknij nagłówek kolumny, aby posortować tabelę.**")
+st.title("📊 Esconitor")
+st.markdown("Aplikacja automatycznie odświeża i analizuje dane co 5 minut.**")
 
 if not os.path.exists(CSV_FILE):
     st.info("Trwa pierwsze pobieranie danych. Odśwież stronę za około 2 minuty...")
