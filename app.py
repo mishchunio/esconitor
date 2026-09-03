@@ -5,6 +5,7 @@ import re
 import os
 import threading
 import traceback
+import logging
 from datetime import datetime
 from bs4 import BeautifulSoup
 from curl_cffi import requests as cffi_requests
@@ -16,10 +17,12 @@ CSV_FILE = "miasta_analiza_kompletna.csv"
 UPDATE_INTERVAL = 300  # 5 minut
 
 # --- SYSTEM LOGOWANIA ---
-def log_msg(msg):
-    # Logi lecą tylko do konsoli (widoczne w Streamlit Cloud -> Manage app -> Logs)
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {msg}")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger(__name__)
 
 # --- LOGIKA SCRAPOWANIA ---
 def make_slug(text):
@@ -30,7 +33,7 @@ def make_slug(text):
 
 def run_scraper():
     try:
-        log_msg("Rozpoczynam nowy cykl scrapowania...")
+        logger.info("Rozpoczynam nowy cykl scrapowania...")
         session = cffi_requests.Session(impersonate="chrome120")
         session.cookies.set("warning", "1", domain=".escort.club")
         session.cookies.set("warning", "1", domain="pl.escort.club")
@@ -43,7 +46,7 @@ def run_scraper():
         }
 
         all_cities = []
-        log_msg("Pobieram miasta dla województw...")
+        logger.info("Pobieram miasta dla województw...")
         for prov_id, prov_name in provinces.items():
             url = "https://pl.escort.club/getCity.php"
             headers = {"x-requested-with": "XMLHttpRequest", "origin": "https://pl.escort.club"}
@@ -51,7 +54,7 @@ def run_scraper():
             
             resp = session.post(url, data=data, headers=headers, timeout=15)
             if resp.status_code != 200:
-                log_msg(f"Błąd API dla woj. {prov_name} (HTTP {resp.status_code})")
+                logger.warning(f"Błąd API dla woj. {prov_name} (HTTP {resp.status_code})")
                 continue
                 
             soup = BeautifulSoup(resp.text, "html.parser")
@@ -62,13 +65,13 @@ def run_scraper():
                     all_cities.append({"province": prov_name, "city": name, "slug": make_slug(name)})
             time.sleep(0.1)
 
-        log_msg(f"Pobrano {len(all_cities)} miast. Zaczynam liczenie ogłoszeń...")
+        logger.info(f"Pobrano {len(all_cities)} miast. Zaczynam liczenie ogłoszeń...")
         
         results = []
         for idx, city_data in enumerate(all_cities, 1):
             url = f"https://pl.escort.club/anonse/towarzyskie/{city_data['slug']}/"
             if idx % 50 == 0:
-                log_msg(f"Sprawdzam miasto {idx}/{len(all_cities)}: {city_data['city']}...")
+                logger.info(f"Sprawdzam miasto {idx}/{len(all_cities)}: {city_data['city']}...")
                 
             resp = session.get(url, timeout=15)
             if resp.status_code == 200:
@@ -80,10 +83,10 @@ def run_scraper():
                 if count > 0:
                     results.append({"Wojewodztwo": city_data["province"], "Miasto": city_data["city"], "Liczba_Ogloszen": count, "URL": url})
             else:
-                 log_msg(f"Błąd HTTP {resp.status_code} dla miasta {city_data['city']}")
+                 logger.warning(f"Błąd HTTP {resp.status_code} dla miasta {city_data['city']}")
             time.sleep(0.2)
 
-        log_msg(f"Znaleziono ogłoszenia w {len(results)} miastach. Pobieram populację z Wikidata...")
+        logger.info(f"Znaleziono ogłoszenia w {len(results)} miastach. Pobieram populację z Wikidata...")
         
         query = """
         SELECT ?cityLabel (MAX(?pop) AS ?population) WHERE {
@@ -100,7 +103,7 @@ def run_scraper():
         resp_wiki = requests.get("https://query.wikidata.org/sparql", params={'format': 'json', 'query': query}, headers=wiki_headers, timeout=30)
         
         if resp_wiki.status_code != 200:
-            log_msg(f"Błąd Wikidata: HTTP {resp_wiki.status_code}")
+            logger.error(f"Błąd Wikidata: HTTP {resp_wiki.status_code}")
         else:
             resp_data = resp_wiki.json()
             cities_pop = {}
@@ -110,21 +113,22 @@ def run_scraper():
                 
             df_pop = pd.DataFrame(list(cities_pop.items()), columns=["Miasto", "Populacja"])
 
-            log_msg("Łączę dane i zapisuję CSV...")
+            logger.info("Łączę dane i zapisuję CSV...")
             df_ads = pd.DataFrame(results)
             df = pd.merge(df_ads, df_pop, on="Miasto", how="inner")
             df = df[df["Populacja"] > 0]
             df["Ogloszenia_na_10k_mieszk"] = (df["Liczba_Ogloszen"] / df["Populacja"] * 10000).round(2)
             df.to_csv(CSV_FILE, index=False, encoding="utf-8-sig")
-            log_msg("✅ Cykl zakończony sukcesem! Dane zaktualizowane.")
+            logger.info("✅ Cykl zakończony sukcesem! Dane zaktualizowane.")
 
     except Exception as e:
-        log_msg(f"❌ KRYTYCZNY BŁĄD SCRAPOWANIA: {e}")
-        log_msg(traceback.format_exc())
+        logger.error(f"❌ KRYTYCZNY BŁĄD SCRAPOWANIA: {e}")
+        logger.error(traceback.format_exc())
 
 # --- URUCHOMIENIE WĄTKU W TLE ---
 @st.cache_resource
 def start_background_task():
+    logger.info("Uruchamianie wątku w tle...")
     def task():
         while True:
             run_scraper()
