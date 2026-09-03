@@ -4,17 +4,24 @@ import time
 import re
 import os
 import threading
+import traceback
 from datetime import datetime
 from bs4 import BeautifulSoup
 from curl_cffi import requests as cffi_requests
 import requests
 
 # --- KONFIGURACJA ---
-st.set_page_config(page_title="Esconitor", layout="wide")
+st.set_page_config(page_title="Monitor Ogłoszeń", layout="wide")
 CSV_FILE = "miasta_analiza_kompletna.csv"
-UPDATE_INTERVAL = 300  # 5 minut (w sekundach)
+UPDATE_INTERVAL = 300  # 5 minut
 
-# --- LOGIKA SCRAPOWANIA (Działa w tle) ---
+# --- SYSTEM LOGOWANIA ---
+def log_msg(msg):
+    # Logi lecą tylko do konsoli (widoczne w Streamlit Cloud -> Manage app -> Logs)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {msg}")
+
+# --- LOGIKA SCRAPOWANIA ---
 def make_slug(text):
     text = text.lower().strip()
     text = text.replace('ł', 'l').replace('ś', 's').replace('ć', 'c').replace('ń', 'n')
@@ -23,11 +30,11 @@ def make_slug(text):
 
 def run_scraper():
     try:
+        log_msg("Rozpoczynam nowy cykl scrapowania...")
         session = cffi_requests.Session(impersonate="chrome120")
         session.cookies.set("warning", "1", domain=".escort.club")
         session.cookies.set("warning", "1", domain="pl.escort.club")
 
-        # 1. Pobieranie województw (uproszczone z fallbackiem dla szybkości i stabilności)
         provinces = {
             "2": "Dolnośląskie", "4": "Kujawsko-Pomorskie", "6": "Lubelskie", "8": "Lubuskie",
             "10": "Łódzkie", "12": "Małopolskie", "14": "Mazowieckie", "16": "Opolskie",
@@ -36,14 +43,18 @@ def run_scraper():
         }
 
         all_cities = []
+        log_msg("Pobieram miasta dla województw...")
         for prov_id, prov_name in provinces.items():
             url = "https://pl.escort.club/getCity.php"
             headers = {"x-requested-with": "XMLHttpRequest", "origin": "https://pl.escort.club"}
             data = {"state_id": prov_id, "selected": "false", "front": "1", "search": "1"}
             
             resp = session.post(url, data=data, headers=headers, timeout=15)
+            if resp.status_code != 200:
+                log_msg(f"Błąd API dla woj. {prov_name} (HTTP {resp.status_code})")
+                continue
+                
             soup = BeautifulSoup(resp.text, "html.parser")
-            
             for opt in soup.find_all("option"):
                 val = opt.get("value", "")
                 name = opt.text.strip()
@@ -51,9 +62,14 @@ def run_scraper():
                     all_cities.append({"province": prov_name, "city": name, "slug": make_slug(name)})
             time.sleep(0.1)
 
+        log_msg(f"Pobrano {len(all_cities)} miast. Zaczynam liczenie ogłoszeń...")
+        
         results = []
-        for city_data in all_cities:
+        for idx, city_data in enumerate(all_cities, 1):
             url = f"https://pl.escort.club/anonse/towarzyskie/{city_data['slug']}/"
+            if idx % 50 == 0:
+                log_msg(f"Sprawdzam miasto {idx}/{len(all_cities)}: {city_data['city']}...")
+                
             resp = session.get(url, timeout=15)
             if resp.status_code == 200:
                 html = resp.text
@@ -63,11 +79,12 @@ def run_scraper():
                     count = int(match_count.group(1))
                 if count > 0:
                     results.append({"Wojewodztwo": city_data["province"], "Miasto": city_data["city"], "Liczba_Ogloszen": count, "URL": url})
+            else:
+                 log_msg(f"Błąd HTTP {resp.status_code} dla miasta {city_data['city']}")
             time.sleep(0.2)
 
-        df_ads = pd.DataFrame(results)
-
-        # 2. Pobieranie populacji z Wikidata
+        log_msg(f"Znaleziono ogłoszenia w {len(results)} miastach. Pobieram populację z Wikidata...")
+        
         query = """
         SELECT ?cityLabel (MAX(?pop) AS ?population) WHERE {
           ?city wdt:P17 wd:Q36 .
@@ -76,32 +93,34 @@ def run_scraper():
           SERVICE wikibase:label { bd:serviceParam wikibase:language "pl". }
         } GROUP BY ?cityLabel
         """
-        headers = {
+        wiki_headers = {
             "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) (MojaAplikacja Python)"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MonitorApp/1.0"
         }
-        resp_wiki = requests.get(
-            "https://query.wikidata.org/sparql", 
-            params={'format': 'json', 'query': query}, 
-            headers=headers,
-            timeout=30
-        ).json()
+        resp_wiki = requests.get("https://query.wikidata.org/sparql", params={'format': 'json', 'query': query}, headers=wiki_headers, timeout=30)
         
-        cities_pop = {}
-        for item in resp_wiki['results']['bindings']:
-            c_name = re.sub(r'\s*\(.*?\)', '', item['cityLabel']['value']).strip()
-            cities_pop[c_name] = int(item['population']['value'])
-            
-        df_pop = pd.DataFrame(list(cities_pop.items()), columns=["Miasto", "Populacja"])
+        if resp_wiki.status_code != 200:
+            log_msg(f"Błąd Wikidata: HTTP {resp_wiki.status_code}")
+        else:
+            resp_data = resp_wiki.json()
+            cities_pop = {}
+            for item in resp_data['results']['bindings']:
+                c_name = re.sub(r'\s*\(.*?\)', '', item['cityLabel']['value']).strip()
+                cities_pop[c_name] = int(item['population']['value'])
+                
+            df_pop = pd.DataFrame(list(cities_pop.items()), columns=["Miasto", "Populacja"])
 
-        # 3. Łączenie i zapis
-        df = pd.merge(df_ads, df_pop, on="Miasto", how="inner")
-        df = df[df["Populacja"] > 0]
-        df["Ogloszenia_na_10k_mieszk"] = (df["Liczba_Ogloszen"] / df["Populacja"] * 10000).round(2)
-        df.to_csv(CSV_FILE, index=False, encoding="utf-8-sig")
+            log_msg("Łączę dane i zapisuję CSV...")
+            df_ads = pd.DataFrame(results)
+            df = pd.merge(df_ads, df_pop, on="Miasto", how="inner")
+            df = df[df["Populacja"] > 0]
+            df["Ogloszenia_na_10k_mieszk"] = (df["Liczba_Ogloszen"] / df["Populacja"] * 10000).round(2)
+            df.to_csv(CSV_FILE, index=False, encoding="utf-8-sig")
+            log_msg("✅ Cykl zakończony sukcesem! Dane zaktualizowane.")
 
     except Exception as e:
-        print(f"Błąd scrapowania: {e}")
+        log_msg(f"❌ KRYTYCZNY BŁĄD SCRAPOWANIA: {e}")
+        log_msg(traceback.format_exc())
 
 # --- URUCHOMIENIE WĄTKU W TLE ---
 @st.cache_resource
@@ -117,7 +136,8 @@ def start_background_task():
 start_background_task()
 
 # --- INTERFEJS UŻYTKOWNIKA (STREAMLIT) ---
-st.title("📊 Esconitor")
+st.title("📊 Monitor Ogłoszeń w Polsce")
+st.markdown("Aplikacja automatycznie odświeża i analizuje dane co 5 minut. **Kliknij nagłówek kolumny, aby posortować tabelę.**")
 
 if not os.path.exists(CSV_FILE):
     st.info("Trwa pierwsze pobieranie danych. Odśwież stronę za około 2 minuty...")
@@ -140,7 +160,7 @@ df_filtered = df[df["Populacja"] >= min_pop]
 if woj_filter != "Wszystkie":
     df_filtered = df_filtered[df_filtered["Wojewodztwo"] == woj_filter]
 
-# Wyświetlanie tabeli z formatowaniem (linki i liczby)
+# Wyświetlanie tabeli
 st.dataframe(
     df_filtered[["Wojewodztwo", "Miasto", "Populacja", "Liczba_Ogloszen", "Ogloszenia_na_10k_mieszk", "URL"]],
     column_config={
