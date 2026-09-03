@@ -29,10 +29,10 @@ def run_scraper():
 
         # 1. Pobieranie województw (uproszczone z fallbackiem dla szybkości i stabilności)
         provinces = {
-            "2": "Dolnośląskie", "3": "Kujawsko-Pomorskie", "4": "Lubelskie", "5": "Lubuskie",
-            "6": "Łódzkie", "7": "Małopolskie", "8": "Mazowieckie", "9": "Opolskie",
-            "10": "Podkarpackie", "11": "Podlaskie", "12": "Pomorskie", "13": "Śląskie",
-            "14": "Świętokrzyskie", "15": "Warmińsko-Mazurskie", "16": "Wielkopolskie", "17": "Zachodniopomorskie"
+            "2": "Dolnośląskie", "4": "Kujawsko-Pomorskie", "6": "Lubelskie", "8": "Lubuskie",
+            "10": "Łódzkie", "12": "Małopolskie", "14": "Mazowieckie", "16": "Opolskie",
+            "18": "Podkarpackie", "20": "Podlaskie", "22": "Pomorskie", "24": "Śląskie",
+            "26": "Świętokrzyskie", "28": "Warmińsko-Mazurskie", "30": "Wielkopolskie", "32": "Zachodniopomorskie"
         }
 
         all_cities = []
