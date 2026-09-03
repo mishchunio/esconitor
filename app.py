@@ -76,7 +76,16 @@ def run_scraper():
           SERVICE wikibase:label { bd:serviceParam wikibase:language "pl". }
         } GROUP BY ?cityLabel
         """
-        resp_wiki = requests.get("https://query.wikidata.org/sparql", params={'format': 'json', 'query': query}, timeout=30).json()
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) (MojaAplikacja Python)"
+        }
+        resp_wiki = requests.get(
+            "https://query.wikidata.org/sparql", 
+            params={'format': 'json', 'query': query}, 
+            headers=headers,
+            timeout=30
+        ).json()
         
         cities_pop = {}
         for item in resp_wiki['results']['bindings']:
