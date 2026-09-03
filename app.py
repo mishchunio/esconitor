@@ -10,7 +10,7 @@ from curl_cffi import requests as cffi_requests
 import requests
 
 # --- KONFIGURACJA ---
-st.set_page_config(page_title="Monitor Ogłoszeń", layout="wide")
+st.set_page_config(page_title="Esconitor", layout="wide")
 CSV_FILE = "miasta_analiza_kompletna.csv"
 UPDATE_INTERVAL = 300  # 5 minut (w sekundach)
 
@@ -108,8 +108,7 @@ def start_background_task():
 start_background_task()
 
 # --- INTERFEJS UŻYTKOWNIKA (STREAMLIT) ---
-st.title("📊 Monitor Ogłoszeń w Polsce")
-st.markdown("Aplikacja automatycznie odświeża i analizuje dane co 5 minut. **Kliknij nagłówek kolumny, aby posortować tabelę.**")
+st.title("📊 Esconitor")
 
 if not os.path.exists(CSV_FILE):
     st.info("Trwa pierwsze pobieranie danych. Odśwież stronę za około 2 minuty...")
