@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 # --- LOGIKA SCRAPOWANIA ---
 def make_slug(text):
     text = text.lower().strip()
+    # Naprawa typowych skrótów (Gorzów Wlkp. -> Gorzów Wielkopolski)
+    text = text.replace("wlkp.", "wielkopolski").replace("wlkp", "wielkopolski")
     text = text.replace('ł', 'l').replace('ś', 's').replace('ć', 'c').replace('ń', 'n')
     text = text.replace('ó', 'o').replace('ż', 'z').replace('ź', 'z').replace('ą', 'a').replace('ę', 'e')
     return re.sub(r'[^a-z0-9]+', '-', text).strip('-')
@@ -38,6 +40,7 @@ def run_scraper():
         session.cookies.set("warning", "1", domain=".escort.club")
         session.cookies.set("warning", "1", domain="pl.escort.club")
 
+        # Przywrócone kody TERYT dla województw
         provinces = {
             "2": "Dolnośląskie", "4": "Kujawsko-Pomorskie", "6": "Lubelskie", "8": "Lubuskie",
             "10": "Łódzkie", "12": "Małopolskie", "14": "Mazowieckie", "16": "Opolskie",
@@ -62,6 +65,7 @@ def run_scraper():
                 val = opt.get("value", "")
                 name = opt.text.strip()
                 if val and val != "0" and "wybierz" not in name.lower():
+                    # Dodajemy slug już tutaj
                     all_cities.append({"province": prov_name, "city": name, "slug": make_slug(name)})
             time.sleep(0.1)
 
@@ -77,23 +81,31 @@ def run_scraper():
             if resp.status_code == 200:
                 html = resp.text
                 count = 0
-                match_count = re.search(r"Lista wyników:\s*(\d+)", html) or re.search(r"spośród\s*<strong>(\d+)</strong>", html) or re.search(r"Znaleziono\s*(\d+)", html)
+                # Bardziej elastyczny Regex omijający ewentualne tagi HTML i ukryte znaki
+                match_count = re.search(r"(?:Lista wyników:|spośród|Znaleziono)\s*(?:<[^>]+>)?\s*(\d+)", html, re.IGNORECASE)
                 if match_count:
                     count = int(match_count.group(1))
                 
-                # Dodajemy WSZYSTKIE miasta, nawet te z 0 ogłoszeń
-                results.append({"Wojewodztwo": city_data["province"], "Miasto": city_data["city"], "Liczba_Ogloszen": count, "URL": url})
+                results.append({
+                    "Wojewodztwo": city_data["province"], 
+                    "Miasto": city_data["city"], 
+                    "slug": city_data["slug"],  # Zachowujemy slug do połączenia
+                    "Liczba_Ogloszen": count, 
+                    "URL": url
+                })
             else:
                  logger.warning(f"Błąd HTTP {resp.status_code} dla miasta {city_data['city']}")
             time.sleep(0.2)
 
         logger.info(f"Zakończono sprawdzanie {len(results)} miast. Pobieram populację z Wikidata...")
         
+        # Zoptymalizowane zapytanie zapobiegające timeoutom na Wikidata (odrzuca P279*)
         query = """
         SELECT ?cityLabel (MAX(?pop) AS ?population) WHERE {
           ?city wdt:P17 wd:Q36 .
-          ?city wdt:P31/wdt:P279* wd:Q515 .
           ?city wdt:P1082 ?pop .
+          ?city wdt:P31 ?type .
+          VALUES ?type { wd:Q515 wd:Q1056552 wd:Q105216377 wd:Q2616889 }
           SERVICE wikibase:label { bd:serviceParam wikibase:language "pl". }
         } GROUP BY ?cityLabel
         """
@@ -109,14 +121,19 @@ def run_scraper():
             resp_data = resp_wiki.json()
             cities_pop = {}
             for item in resp_data['results']['bindings']:
+                # Usuwamy nawiasy z nazw miast (np. "Toruń (miasto)" -> "Toruń")
                 c_name = re.sub(r'\s*\(.*?\)', '', item['cityLabel']['value']).strip()
                 cities_pop[c_name] = int(item['population']['value'])
                 
-            df_pop = pd.DataFrame(list(cities_pop.items()), columns=["Miasto", "Populacja"])
+            df_pop = pd.DataFrame(list(cities_pop.items()), columns=["Miasto_Wiki", "Populacja"])
+            # Generujemy slug dla bazy Wikidata
+            df_pop["slug"] = df_pop["Miasto_Wiki"].apply(make_slug)
 
             logger.info("Łączę dane, filtruję i zapisuję CSV...")
             df_ads = pd.DataFrame(results)
-            df = pd.merge(df_ads, df_pop, on="Miasto", how="inner")
+            
+            # Łączymy bazę po uniwersalnym "slug", omijając problem literówek i znaków specjalnych
+            df = pd.merge(df_ads, df_pop.drop(columns=["Miasto_Wiki"]), on="slug", how="inner")
             
             # Odrzucamy wiersze bez przypisanej populacji (bądź równej 0)
             df = df[df["Populacja"] > 0]
@@ -126,6 +143,8 @@ def run_scraper():
 
             df["Ogloszenia_na_10k_mieszk"] = (df["Liczba_Ogloszen"] / df["Populacja"] * 10000).round(2)
             
+            # Usuwamy techniczną kolumnę 'slug' i zapisujemy
+            df = df.drop(columns=["slug"])
             df.to_csv(CSV_FILE, index=False, encoding="utf-8-sig")
             logger.info("✅ Cykl zakończony sukcesem! Dane zaktualizowane.")
 
